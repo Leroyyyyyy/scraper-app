@@ -1,0 +1,9 @@
+venv/
+venv_sys/
+__pycache__/
+*.pyc
+data/*.db
+data/*.log
+data/*.json
+.DS_Store
+data/*.pid

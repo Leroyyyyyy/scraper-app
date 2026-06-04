@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.scraper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/leroy/WorkBuddy/2026-06-01-14-33-19/scraper-app/venv_sys/bin/python3</string>
+        <string>/Users/leroy/WorkBuddy/2026-06-01-14-33-19/scraper-app/scheduler.py</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/leroy/WorkBuddy/2026-06-01-14-33-19/scraper-app</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/leroy/WorkBuddy/2026-06-01-14-33-19/scraper-app/data/scheduler.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/leroy/WorkBuddy/2026-06-01-14-33-19/scraper-app/data/scheduler_error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HTTPS_PROXY</key>
+        <string></string>
+        <key>HTTP_PROXY</key>
+        <string></string>
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据追踪仪表盘</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+  :root {
+    --bg: #eef5ee;
+    --card-bg: #ffffff;
+    --card-hover: #f6fcf7;
+    --text: #1a3c2a;
+    --text2: #5a7d64;
+    --text3: #8baa93;
+    --border: #d4e8d8;
+    --accent: #16a34a;
+    --accent-light: #dcfce7;
+    --accent-hover: #15803d;
+    --accent-bg: #f0fdf4;
+    --green1: #dcfce7;
+    --green2: #bbf7d0;
+    --green3: #86efac;
+    --bilibili: #fb7299;
+    --douyin: #374151;
+    --xiaohongshu: #ef4444;
+    --radius: 12px;
+    --shadow-sm: 0 1px 3px rgba(22,163,74,.06);
+    --shadow-md: 0 4px 16px rgba(22,163,74,.08);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    min-height: 100vh;
+  }
+  .layout { max-width: 1400px; margin:0 auto; padding: 24px 24px 40px; }
+  .header { margin-bottom: 20px; }
+  .header h1 { font-size: 22px; font-weight: 600; color: var(--accent-hover); }
+  .header p { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+  .toolbar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--card-bg); padding: 12px 16px; border-radius: var(--radius);
+    box-shadow: var(--shadow-sm); margin-bottom: 16px;
+  }
+  .tb-left { display: flex; gap: 6px; }
+  .tb-center { flex: 1; display: flex; gap: 8px; align-items: center; }
+  .tb-right { display: flex; gap: 8px; }
+
+  .tab {
+    padding: 7px 16px; border:1px solid var(--border); border-radius: 20px;
+    font-size: 13px; font-weight: 500; cursor: pointer; background: #fff;
+    color: var(--text2); transition: all .2s; white-space: nowrap;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+  .tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .tb-center input {
+    padding: 7px 14px; border:1px solid var(--border); border-radius: 20px;
+    font-size: 13px; outline: none; width: 220px; font-family: inherit;
+    transition: all .2s; background: #fff;
+  }
+  .tb-center input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+
+  .btn {
+    padding: 7px 16px; border-radius: 20px; border:1px solid var(--border);
+    font-size: 13px; font-weight: 500; cursor: pointer; background: #fff;
+    color: var(--text); display: flex; align-items: center; gap: 5px;
+    transition: all .2s; white-space: nowrap; font-family: inherit;
+  }
+  .btn:hover { background: var(--accent-bg); border-color: var(--accent); transform: translateY(-1px); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(22,163,74,.3); }
+  .btn-xs { padding: 4px 10px; font-size: 12px; border-radius: 14px; }
+
+  .stats-row {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat-card {
+    background: var(--card-bg); padding: 18px; border-radius: var(--radius);
+    box-shadow: var(--shadow-sm); transition: all .25s; border: 1px solid transparent;
+  }
+  .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--accent-light); }
+  .stat-card .label { font-size: 12px; color: var(--text2); margin-bottom: 6px; font-weight: 500; }
+  .stat-card .value { font-size: 28px; font-weight: 600; }
+  .stat-card .sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+  .main-area { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; min-height: 500px; }
+
+  .panel {
+    background: var(--card-bg); border-radius: var(--radius);
+    box-shadow: var(--shadow-sm); overflow: hidden; display: flex; flex-direction: column;
+    border: 1px solid transparent; transition: box-shadow .3s;
+  }
+  .panel-header {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    font-weight: 600; font-size: 14px; display: flex;
+    justify-content: space-between; align-items: center;
+    background: var(--accent-bg);
+  }
+  .panel-body { flex: 1; overflow-y: auto; }
+
+  /* Content list items */
+  .item {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    cursor: pointer; transition: all .2s;
+    display: flex; gap: 12px; align-items: flex-start;
+    border-left: 3px solid transparent;
+  }
+  .item:hover { background: var(--card-hover); transform: translateX(2px); }
+  .item.active { background: var(--accent-bg); border-left: 3px solid var(--accent); }
+  .item-badge {
+    width: 34px; height: 34px; border-radius: 8px; display: flex;
+    align-items: center; justify-content: center; font-size: 16px;
+    flex-shrink: 0;
+  }
+  .item-body { flex: 1; min-width: 0; }
+  .item-title {
+    font-size: 14px; font-weight: 500; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px;
+  }
+  .item-meta { font-size: 12px; color: var(--text2); display: flex; gap: 10px; }
+  .item-right { text-align: right; flex-shrink: 0; }
+  .item-stat { font-size: 14px; font-weight: 600; }
+  .item-stat-label { font-size: 11px; color: var(--text3); }
+
+  .platform-bilibili { background: #fff0f3; color: var(--bilibili); }
+  .platform-douyin { background: #f3f4f6; color: var(--douyin); }
+  .platform-xiaohongshu { background: #fff0f0; color: var(--xiaohongshu); }
+
+  /* Detail panel */
+  .detail-empty {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100%; color: var(--text3);
+    font-size: 14px; gap: 8px;
+  }
+  .detail-empty svg { opacity: 0.2; }
+  .detail-content { padding: 20px; }
+  .dt-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; line-height: 1.4; }
+  .dt-url { font-size: 12px; color: var(--accent); word-break: break-all; margin-bottom: 16px; }
+
+  /* T-node timeline */
+  .t-timeline {
+    display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--bg); border-radius: var(--radius);
+  }
+  .t-badge {
+    padding: 5px 14px; border-radius: 16px; font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all .2s; background: #fff;
+    color: var(--text2); border: 1px solid var(--border);
+    position: relative;
+  }
+  .t-badge:hover { background: var(--accent-light); color: var(--accent-hover); border-color: var(--accent); transform: translateY(-1px); }
+  .t-badge.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 2px 6px rgba(22,163,74,.3); }
+  .t-badge.unavailable { opacity: 0.3; cursor: default; pointer-events: none; }
+  .t-legend { font-size: 11px; color: var(--text3); width: 100%; margin-top: 4px; }
+
+  .dt-stats-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    margin-bottom: 20px;
+  }
+  .dt-stat {
+    background: var(--bg); padding: 14px; border-radius: 8px; text-align: center;
+    transition: all .2s;
+  }
+  .dt-stat:hover { background: var(--accent-light); }
+  .dt-stat .num { font-size: 20px; font-weight: 600; color: var(--accent-hover); }
+  .dt-stat .tag { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+  .chart-container {
+    background: var(--bg); border-radius: var(--radius); padding: 16px;
+    margin-bottom: 16px;
+  }
+  .chart-container .chart-title { font-size: 12px; color: var(--text2); margin-bottom: 10px; font-weight: 500; }
+  .chart-wrap { position: relative; height: 200px; width: 100%; }
+
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text3); }
+  .empty-state p { font-size: 14px; }
+  .empty-state .hint { font-size: 12px; margin-top: 4px; }
+
+  .msg {
+    position: fixed; top: 16px; right: 24px; padding: 10px 20px;
+    border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 999;
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .msg.show { opacity: 1; }
+  .msg.ok { background: var(--accent-light); color: var(--accent-hover); }
+  .msg.err { background: #fee2e2; color: #991b1b; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .item { animation: fadeUp .3s ease-out; }
+
+  @media(max-width:1100px){ .main-area { grid-template-columns: 1fr; } .stats-row { grid-template-columns: repeat(3,1fr); } }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="header">
+    <h1>🌿 数据追踪仪表盘</h1>
+    <p>跨平台内容数据监控 · B站 · 抖音 · 小红书</p>
+  </div>
+
+  <div class="msg" id="msg"></div>
+
+  <div class="toolbar">
+    <div class="tb-left" id="platformTabs">
+      <button class="tab on" data-p="">全部</button>
+      <button class="tab" data-p="bilibili">B站</button>
+      <button class="tab" data-p="douyin">抖音</button>
+      <button class="tab" data-p="xiaohongshu">小红书</button>
+    </div>
+    <div class="tb-center">
+      <input id="searchInput" placeholder="搜索内容..." oninput="loadContent()">
+    </div>
+    <div class="tb-right">
+      <input id="urlInput" placeholder="粘贴链接..." style="width:200px" onkeydown="if(event.key==='Enter')addLink()">
+      <button class="btn primary" onclick="addLink()">+ 添加</button>
+      <button class="btn" onclick="refreshAll()">🔄 刷新</button>
+    </div>
+  </div>
+
+  <div class="stats-row" id="statsRow">
+    <div class="stat-card"><div class="label">追踪内容</div><div class="value" id="sTotal" style="color:var(--accent)">0</div><div class="sub" id="sPlatforms"></div></div>
+    <div class="stat-card"><div class="label">今日待采集</div><div class="value" id="sPending" style="color:#ca8a04">0</div><div class="sub">条</div></div>
+    <div class="stat-card"><div class="label">采集异常</div><div class="value" id="sAnomalies" style="color:#dc2626">0</div><div class="sub">条</div></div>
+    <div class="stat-card"><div class="label">快照覆盖率</div><div class="value" id="sCoverage" style="color:var(--accent)">0%</div><div class="sub">有数据占比</div></div>
+    <div class="stat-card"><div class="label">最近更新</div><div class="value" id="sLastUpdate" style="font-size:16px">--</div></div>
+  </div>
+
+  <div class="main-area">
+    <div class="panel">
+      <div class="panel-header">
+        <span>追踪内容列表</span>
+        <span style="font-size:12px;color:var(--text3)" id="listCount">0 条</span>
+      </div>
+      <div class="panel-body" id="contentList">
+        <div class="empty-state"><p>暂无数据</p><p class="hint">粘贴链接添加第一条内容</p></div>
+      </div>
+    </div>
+
+    <div class="panel" id="detailPanel">
+      <div class="panel-header">
+        <span id="detailTitle">内容详情</span>
+        <button class="btn btn-xs" onclick="deleteCurrent()" id="btnDelete" style="display:none">删除</button>
+      </div>
+      <div class="panel-body">
+        <div class="detail-empty" id="detailEmpty">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <span>选择左侧内容查看详情</span>
+        </div>
+        <div class="detail-content" id="detailContent" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+let currentPlatform = '';
+let currentLinkId = null;
+let currentDetail = null;
+let selectedTNode = null; // null = latest
+let chart = null;
+
+document.querySelectorAll('#platformTabs .tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('#platformTabs .tab').forEach(x => x.classList.remove('on'));
+    t.classList.add('on');
+    currentPlatform = t.dataset.p;
+    loadAll();
+  };
+});
+
+async function loadAll() { await Promise.all([loadStats(), loadContent()]); }
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    document.getElementById('sTotal').textContent = d.total;
+    document.getElementById('sPending').textContent = d.pending;
+    document.getElementById('sAnomalies').textContent = d.anomalies;
+    document.getElementById('sCoverage').textContent = d.coverage + '%';
+    const platforms = d.by_platform || {};
+    document.getElementById('sPlatforms').textContent = Object.entries(platforms).map(([k,v]) => {
+      const n = {bilibili:'B站',douyin:'抖音',xiaohongshu:'小红书'}[k]||k;
+      return n + ' ' + v;
+    }).join(' · ') || '--';
+    const lu = document.getElementById('sLastUpdate');
+    try {
+      const cr = await fetch('/api/content?limit=1');
+      const cd = await cr.json();
+      if (cd.length) lu.textContent = (cd[0].captured_at || '').slice(5,16);
+      else lu.textContent = '--';
+    } catch(e) { lu.textContent = '--'; }
+  } catch(e) {}
+}
+
+async function loadContent() {
+  const list = document.getElementById('contentList');
+  const cnt = document.getElementById('listCount');
+  const search = document.getElementById('searchInput').value.trim();
+  let url = '/api/content';
+  const params = [];
+  if (currentPlatform) params.push('platform=' + currentPlatform);
+  if (search) params.push('search=' + encodeURIComponent(search));
+  if (params.length) url += '?' + params.join('&');
+
+  try {
+    const r = await fetch(url);
+    const data = await r.json();
+    cnt.textContent = data.length + ' 条';
+    if (!data.length) {
+      list.innerHTML = '<div class="empty-state"><p>暂无数据</p><p class="hint">粘贴链接添加内容</p></div>';
+      return;
+    }
+    list.innerHTML = data.map(item => {
+      const pn = {bilibili:'B站',douyin:'抖音',xiaohongshu:'小红书'}[item.platform]||item.platform;
+      const pc = 'platform-' + item.platform;
+      const img = item.platform === 'bilibili' ? '📺' : item.platform === 'douyin' ? '🎵' : '📕';
+      const play = fmt(item.play_count);
+      const days = item.days_since_publish;
+      const tnLabel = days != null ? (days<=1?'T1':days<=3?'T3':days<=5?'T5':days<=7?'T7':days<=15?'T15':days<=30?'T30':'T30+') : '';
+      const activeCls = item.link_id === currentLinkId ? ' active' : '';
+      return `<div class="item${activeCls}" onclick="selectContent(${item.link_id})">
+        <div class="item-badge ${pc}">${img}</div>
+        <div class="item-body">
+          <div class="item-title">${esc(item.title || '无标题')}</div>
+          <div class="item-meta">
+            <span>@${esc(item.author || '未知')}</span><span>${pn}</span>
+            ${tnLabel ? '<span style="color:var(--accent);font-weight:600">'+tnLabel+'</span>' : ''}
+          </div>
+        </div>
+        <div class="item-right"><div class="item-stat">${play}</div><div class="item-stat-label">播放</div></div>
+      </div>`;
+    }).join('');
+    if (currentLinkId) {
+      const sel = list.querySelector('.item.active');
+      if (!sel) { currentLinkId = null; showDetailEmpty(); }
+    }
+  } catch(e) { list.innerHTML = '<div class="empty-state"><p>加载失败</p></div>'; }
+}
+
+async function selectContent(linkId) {
+  if (chart) { chart.destroy(); chart = null; }
+  selectedTNode = null;
+  currentLinkId = linkId;
+  document.getElementById('detailEmpty').style.display = 'none';
+  document.getElementById('detailContent').style.display = 'block';
+  document.getElementById('btnDelete').style.display = 'inline-flex';
+  document.getElementById('detailTitle').textContent = '加载中...';
+  document.getElementById('detailContent').innerHTML = '<div class="detail-empty">加载中...</div>';
+  try {
+    const r = await fetch('/api/content/' + linkId);
+    const d = await r.json();
+    currentDetail = d;
+    renderDetail(d, null);
+    document.getElementById('detailTitle').textContent = '内容详情';
+  } catch(e) {
+    document.getElementById('detailContent').innerHTML = '<div class="detail-empty">加载失败</div>';
+  }
+  loadContent();
+}
+
+function getTNodeSnapshot(d, tLabel) {
+  if (!tLabel || !d.history) return null;
+  const h = d.history.filter(x => x.t_label === tLabel);
+  return h.length ? h[h.length - 1] : null;
+}
+
+function switchTNode(tLabel) {
+  selectedTNode = tLabel;
+  renderDetail(currentDetail, tLabel);
+}
+
+function renderDetail(d, activeT) {
+  if (chart) { chart.destroy(); chart = null; }
+  const pn = {bilibili:'B站',douyin:'抖音',xiaohongshu:'小红书'}[d.platform]||d.platform;
+
+  // Build T-node timeline
+  const tNodes = ['T1','T3','T5','T7','T15','T30','T30+'];
+  const availableTNodes = new Set((d.history || []).map(h => h.t_label).filter(Boolean));
+  const currentT = activeT || d.t_label;
+
+  const tTimelineHtml = tNodes.map(t => {
+    const avail = availableTNodes.has(t);
+    const active = currentT === t;
+    let cls = 't-badge';
+    if (active) cls += ' active';
+    if (!avail) cls += ' unavailable';
+    const h = getTNodeSnapshot(d, t);
+    const label = h ? `${t}` : t;
+    const onclick = avail ? `onclick="switchTNode('${t}')"` : '';
+    const title = avail ? `切换到${t}节点数据` : '该节点暂无数据';
+    return `<span class="${cls}" ${onclick} title="${title}">${label}</span>`;
+  }).join('');
+
+  // Determine which snapshot to show
+  let snapshot = d;
+  if (activeT && activeT !== d.t_label) {
+    const ts = getTNodeSnapshot(d, activeT);
+    if (ts) snapshot = { ...d, ...ts };
+  }
+
+  const play = fmt(snapshot.play_count);
+  const likes = fmt(snapshot.like_count);
+  const comments = fmt(snapshot.comment_count);
+  const favorites = fmt(snapshot.favorite_count);
+  const shares = fmt(snapshot.share_count);
+  const followers = fmt(snapshot.follower_count);
+  const activeDay = snapshot.days_since_publish;
+
+  document.getElementById('detailContent').innerHTML = `
+    <div class="dt-title">${esc(d.title || '无标题')}</div>
+    <div class="dt-url">${esc(d.url)}</div>
+    <div class="t-timeline">${tTimelineHtml}</div>
+    <div class="t-legend">⬤ 当前节点 · 点击切换查看该时间点的数据快照</div>
+    <div class="dt-stats-grid">
+      ${snapshot.play_count ? `<div class="dt-stat"><div class="num">${play}</div><div class="tag">播放量</div></div>` : ''}
+      ${snapshot.like_count ? `<div class="dt-stat"><div class="num">${likes}</div><div class="tag">点赞</div></div>` : ''}
+      ${snapshot.comment_count ? `<div class="dt-stat"><div class="num">${comments}</div><div class="tag">评论</div></div>` : ''}
+      ${snapshot.favorite_count ? `<div class="dt-stat"><div class="num">${favorites}</div><div class="tag">收藏</div></div>` : ''}
+      ${snapshot.share_count ? `<div class="dt-stat"><div class="num">${shares}</div><div class="tag">分享</div></div>` : ''}
+      ${snapshot.follower_count ? `<div class="dt-stat"><div class="num">${followers}</div><div class="tag">粉丝</div></div>` : ''}
+      ${d.author ? `<div class="dt-stat"><div class="num" style="font-size:16px">${esc(d.author)}</div><div class="tag">作者</div></div>` : ''}
+      <div class="dt-stat"><div class="num" style="font-size:16px">${pn}</div><div class="tag">平台</div></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title">📈 数据趋势</div>
+      <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+    </div>
+  `;
+
+  setTimeout(() => renderChart(d.history || [], activeT), 100);
+}
+
+function renderChart(history, activeT) {
+  if (!history.length) return;
+  const ctx = document.getElementById('trendChart');
+  if (!ctx) return;
+  if (chart) chart.destroy();
+
+  const labels = history.map(h => {
+    const t = h.t_label || '';
+    return (h.captured_at||'').slice(5,16) + (t ? ' ('+t+')' : '');
+  });
+  const datasets = [];
+  const colors = { play_count:'#16a34a', like_count:'#dc2626', comment_count:'#2563eb', favorite_count:'#ca8a04' };
+
+  Object.entries(colors).forEach(([key, color]) => {
+    const vals = history.map(h => h[key]||0);
+    if (vals.some(v => v > 0)) {
+      datasets.push({
+        label: {play_count:'播放',like_count:'点赞',comment_count:'评论',favorite_count:'收藏'}[key],
+        data: vals, borderColor: color, backgroundColor: color+'20',
+        tension: 0.3, fill: false, pointRadius: 2, borderWidth: 2,
+      });
+    }
+  });
+  if (!datasets.length) return;
+
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 12, padding: 12, font: { size: 11 }, usePointStyle: true } },
+        tooltip: { backgroundColor: '#14532d', titleFont: { size: 11 }, bodyFont: { size: 11 } }
+      },
+      scales: {
+        y: { beginAtZero: false, ticks: { callback: v => fmt(v), font:{size:10}, color:'#5a7d64' }, grid: { color:'#d4e8d8' } },
+        x: { ticks: { font:{size:10}, color:'#5a7d64', maxTicksLimit: 8 }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+async function addLink() {
+  const inp = document.getElementById('urlInput');
+  const url = inp.value.trim();
+  if (!url) return;
+  const btn = document.querySelector('.btn.primary');
+  btn.disabled = true; btn.textContent = '添加中...';
+  try {
+    const r = await fetch('/api/links', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url}) });
+    const d = await r.json();
+    if (r.ok && d.result.status === 'ok') { toast('添加成功 ✓', 'ok'); inp.value = ''; }
+    else { toast('失败: ' + ((d.detail||d.result?.error||'未知')), 'err'); }
+  } catch(e) { toast('网络错误', 'err'); }
+  btn.disabled = false; btn.textContent = '+ 添加';
+  loadAll();
+}
+
+async function refreshAll() {
+  const btn = document.querySelector('.btn:not(.primary):not(.btn-xs)');
+  btn.disabled = true; toast('正在刷新全部...', 'ok');
+  try { await fetch('/api/scrape-all', { method:'POST' }); toast('刷新完成 ✓', 'ok'); }
+  catch(e) { toast('刷新失败', 'err'); }
+  btn.disabled = false; loadAll();
+}
+
+async function deleteCurrent() {
+  if (!currentLinkId) return;
+  if (!confirm('确定删除这条内容？')) return;
+  try { await fetch('/api/links/' + currentLinkId, { method:'DELETE' }); toast('已删除', 'ok'); }
+  catch(e) {}
+  currentLinkId = null; currentDetail = null;
+  showDetailEmpty(); loadAll();
+}
+
+function showDetailEmpty() {
+  document.getElementById('detailEmpty').style.display = 'flex';
+  document.getElementById('detailContent').style.display = 'none';
+  document.getElementById('btnDelete').style.display = 'none';
+  document.getElementById('detailTitle').textContent = '内容详情';
+  if (chart) { chart.destroy(); chart = null; }
+}
+
+function toast(msg, type) {
+  const el = document.getElementById('msg');
+  el.textContent = msg; el.className = 'msg show ' + type;
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function fmt(n) {
+  if (!n && n !== 0) return '--';
+  if (n >= 100000000) return (n/100000000).toFixed(1) + '亿';
+  if (n >= 10000) return (n/10000).toFixed(1) + '万';
+  return n.toLocaleString();
+}
+function esc(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+loadAll();
+</script>
+</body>
+</html>
