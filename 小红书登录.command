@@ -1,22 +1,22 @@
 #!/bin/bash
 # ==============================================
-#  小红书登录 — 双击运行，扫码即完成
+#  小红书登录 — 双击运行，登录一次后自动复用
 # ==============================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-unset HTTP_PROXY HTTPS_PROXY ALL_PROXY
-
 echo ""
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║    小红书扫码登录                   ║"
+echo "  ║    小红书登录                        ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
-echo "  浏览器即将打开，请在浏览器中："
-echo "  1. 用手机小红书 App 扫描页面上的二维码"
-echo "  2. 登录成功后，回到这里按 Enter"
-echo ""
+
+if [ ! -d "venv_sys" ]; then
+    echo "  ⚠️  请先运行「首次安装.command」完成环境安装"
+    read -p "  按 Enter 关闭窗口..."
+    exit 1
+fi
 
 venv_sys/bin/python3 login_xiaohongshu.py
 

@@ -4,6 +4,7 @@ B站抓取模块 —— 通过官方 API 获取视频/作者数据
 import re
 import requests
 import json
+from scrapers import result as scrape_result
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -106,13 +107,15 @@ def fetch(url: str) -> dict | None:
     """统一入口：根据链接抓取 B站数据"""
     parsed = parse_url(url)
     if not parsed:
-        return {"error": "无法识别该链接，请提供 B站视频或用户主页链接"}
+        return scrape_result.error("无法识别该链接，请提供 B站视频或用户主页链接", "api")
 
     link_type, target_id = parsed
     if link_type == "video":
-        return fetch_video(target_id)
+        data = fetch_video(target_id)
     else:
-        return fetch_author(target_id)
+        data = fetch_author(target_id)
+
+    return scrape_result.normalize(data, "api")
 
 
 def extract_platform_info(url: str) -> tuple[str, str] | None:

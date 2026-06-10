@@ -87,6 +87,38 @@
   .stat-card .value { font-size: 28px; font-weight: 600; }
   .stat-card .sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
 
+  .capture-strip {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; box-shadow: var(--shadow-sm);
+  }
+  .capture-strip .cap-title { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+  .capture-strip .cap-meta { font-size: 12px; color: var(--text2); }
+  .capture-report { font-size: 12px; color: var(--text2); text-align: right; max-width: 560px; }
+  .capture-report strong { color: var(--text); }
+  .capture-errors { margin-top: 6px; color: #991b1b; }
+  .status-pill {
+    display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; border: 1px solid transparent; white-space: nowrap;
+  }
+  .status-ok { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
+  .status-partial { color: #92400e; background: #fef3c7; border-color: #fde68a; }
+  .status-error { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
+  .status-none { color: var(--text2); background: #f3f4f6; border-color: #e5e7eb; }
+  .reliability-box {
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    margin-bottom: 16px; background: #fff;
+  }
+  .reliability-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text2); margin-top: 6px; }
+  .reliability-row span:first-child { color: var(--text3); }
+  .field-tags { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+  .field-tag { padding: 2px 7px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; }
+  .platform-hint {
+    margin-top: 8px; padding: 8px 10px; background: #fff7ed; color: #9a3412;
+    border: 1px solid #fed7aa; border-radius: 8px; font-size: 12px;
+  }
+
   .main-area { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; min-height: 500px; }
 
   .panel {
@@ -232,6 +264,14 @@
     <div class="stat-card"><div class="label">最近更新</div><div class="value" id="sLastUpdate" style="font-size:16px">--</div></div>
   </div>
 
+  <div class="capture-strip">
+    <div>
+      <div class="cap-title">采集状态</div>
+      <div class="cap-meta" id="captureMeta">等待刷新 · B站 API，小红书/抖音使用本机浏览器辅助采集</div>
+    </div>
+    <div class="capture-report" id="captureReport">暂无本轮报告</div>
+  </div>
+
   <div class="main-area">
     <div class="panel">
       <div class="panel-header">
@@ -328,6 +368,11 @@ async function loadContent() {
       const days = item.days_since_publish;
       const tnLabel = days != null ? (days<=1?'T1':days<=3?'T3':days<=5?'T5':days<=7?'T7':days<=15?'T15':days<=30?'T30':'T30+') : '';
       const activeCls = item.link_id === currentLinkId ? ' active' : '';
+      const status = item.scrape_status || 'none';
+      const statusText = statusLabel(status);
+      const statusCls = statusClass(status);
+      const missing = (item.missing_fields || []).length ? ` · 缺 ${item.missing_fields.length} 项` : '';
+      const last = item.last_scraped_at ? item.last_scraped_at.slice(5,16) : '未采集';
       return `<div class="item${activeCls}" onclick="selectContent(${item.link_id})">
         <div class="item-badge ${pc}">${img}</div>
         <div class="item-body">
@@ -335,6 +380,11 @@ async function loadContent() {
           <div class="item-meta">
             <span>@${esc(item.author || '未知')}</span><span>${pn}</span>
             ${tnLabel ? '<span style="color:var(--accent);font-weight:600">'+tnLabel+'</span>' : ''}
+          </div>
+          <div class="item-meta" style="margin-top:4px">
+            <span class="status-pill ${statusCls}">${statusText}</span>
+            <span>${last}${missing}</span>
+            ${item.scrape_error ? `<span title="${esc(item.scrape_error)}">${esc(shortError(item.scrape_error))}</span>` : ''}
           </div>
         </div>
         <div class="item-right"><div class="item-stat">${play}</div><div class="item-stat-label">播放</div></div>
@@ -415,10 +465,12 @@ function renderDetail(d, activeT) {
   const shares = fmt(snapshot.share_count);
   const followers = fmt(snapshot.follower_count);
   const activeDay = snapshot.days_since_publish;
+  const reliabilityHtml = renderReliability(d);
 
   document.getElementById('detailContent').innerHTML = `
     <div class="dt-title">${esc(d.title || '无标题')}</div>
     <div class="dt-url">${esc(d.url)}</div>
+    ${reliabilityHtml}
     <div class="t-timeline">${tTimelineHtml}</div>
     <div class="t-legend">⬤ 当前节点 · 点击切换查看该时间点的数据快照</div>
     <div class="dt-stats-grid">
@@ -491,7 +543,7 @@ async function addLink() {
   try {
     const r = await fetch('/api/links', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url}) });
     const d = await r.json();
-    if (r.ok && d.result.status === 'ok') { toast('添加成功 ✓', 'ok'); inp.value = ''; }
+    if (r.ok && ['ok','partial'].includes(d.result.status)) { toast(d.result.status === 'partial' ? '已添加，部分字段缺失' : '添加成功 ✓', 'ok'); inp.value = ''; }
     else { toast('失败: ' + ((d.detail||d.result?.error||'未知')), 'err'); }
   } catch(e) { toast('网络错误', 'err'); }
   btn.disabled = false; btn.textContent = '+ 添加';
@@ -500,10 +552,22 @@ async function addLink() {
 
 async function refreshAll() {
   const btn = document.querySelector('.btn:not(.primary):not(.btn-xs)');
-  btn.disabled = true; toast('正在刷新全部...', 'ok');
-  try { await fetch('/api/scrape-all', { method:'POST' }); toast('刷新完成 ✓', 'ok'); }
-  catch(e) { toast('刷新失败', 'err'); }
-  btn.disabled = false; loadAll();
+  const oldText = btn.textContent;
+  btn.disabled = true; btn.textContent = '刷新中...';
+  document.getElementById('captureMeta').textContent = '正在采集全部链接，请稍等...';
+  toast('正在刷新全部...', 'ok');
+  try {
+    const r = await fetch('/api/scrape-all', { method:'POST' });
+    const report = await r.json();
+    renderCaptureReport(report);
+    const msg = report.error ? `刷新完成，${report.error} 条失败` : '刷新完成 ✓';
+    toast(msg, report.error ? 'err' : 'ok');
+  }
+  catch(e) {
+    document.getElementById('captureReport').innerHTML = '<strong>刷新失败</strong> · 本地服务或浏览器采集异常';
+    toast('刷新失败', 'err');
+  }
+  btn.disabled = false; btn.textContent = oldText; loadAll();
 }
 
 async function deleteCurrent() {
@@ -536,6 +600,67 @@ function fmt(n) {
   return n.toLocaleString();
 }
 function esc(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+
+function statusLabel(status) {
+  return {ok:'成功', partial:'部分', error:'失败', none:'未采集'}[status] || status;
+}
+
+function statusClass(status) {
+  return {ok:'status-ok', partial:'status-partial', error:'status-error', none:'status-none'}[status] || 'status-none';
+}
+
+function sourceLabel(source) {
+  return {api:'API', browser_dom:'浏览器DOM', browser_network:'浏览器网络', manual_unavailable:'需人工处理'}[source] || source || '--';
+}
+
+function fieldLabel(field) {
+  return {
+    title:'标题', author:'作者', publish_time:'发布时间', play_count:'播放',
+    like_count:'点赞', comment_count:'评论', favorite_count:'收藏', share_count:'分享'
+  }[field] || field;
+}
+
+function shortError(error) {
+  if (!error) return '';
+  return error.length > 22 ? error.slice(0, 22) + '...' : error;
+}
+
+function renderReliability(d) {
+  const status = d.scrape_status || 'none';
+  const missing = d.missing_fields || [];
+  const platformHint = d.platform === 'xiaohongshu' && /登录|匿名|login/i.test(d.scrape_error || '')
+    ? '<div class="platform-hint">小红书需要登录态时，请双击项目里的 小红书登录.command，登录一次后回到这里刷新。</div>'
+    : '';
+  return `<div class="reliability-box">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <strong style="font-size:13px">采集可靠性</strong>
+      <span class="status-pill ${statusClass(status)}">${statusLabel(status)}</span>
+    </div>
+    <div class="reliability-row"><span>最近采集</span><strong>${esc(d.last_scraped_at || '--')}</strong></div>
+    <div class="reliability-row"><span>采集来源</span><strong>${esc(sourceLabel(d.scrape_source))}</strong></div>
+    <div class="reliability-row"><span>成功快照</span><strong>${d.snapshot_count || 0} 条</strong></div>
+    ${missing.length ? `<div class="reliability-row"><span>缺失字段</span><div class="field-tags">${missing.map(f => `<span class="field-tag">${esc(fieldLabel(f))}</span>`).join('')}</div></div>` : ''}
+    ${d.scrape_error ? `<div class="reliability-row"><span>失败原因</span><strong style="color:#991b1b;text-align:right">${esc(d.scrape_error)}</strong></div>` : ''}
+    ${platformHint}
+  </div>`;
+}
+
+function renderCaptureReport(report) {
+  const errors = (report.results || []).filter(x => x.status === 'error').slice(0, 3);
+  const partials = (report.results || []).filter(x => x.status === 'partial').length;
+  document.getElementById('captureMeta').textContent = `上次刷新 ${new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'})} · 耗时 ${report.duration_sec || 0}s`;
+  document.getElementById('captureReport').innerHTML = `
+    <strong>${report.total || 0}</strong> 条 ·
+    成功 <strong>${report.ok || 0}</strong> ·
+    部分 <strong>${partials}</strong> ·
+    失败 <strong>${report.error || 0}</strong>
+    ${errors.length ? `<div class="capture-errors">${errors.map(x => `${platformLabel(x.platform)}: ${esc(shortError(x.error || '未知错误'))}`).join(' · ')}</div>` : ''}
+  `;
+}
+
+function platformLabel(platform) {
+  return {bilibili:'B站',douyin:'抖音',xiaohongshu:'小红书'}[platform] || platform;
+}
 
 loadAll();
 </script>

@@ -3,6 +3,7 @@
 """
 import sqlite3
 import os
+import json
 from datetime import datetime
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -48,6 +49,19 @@ def init_db():
             FOREIGN KEY (link_id) REFERENCES links(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source TEXT,
+            error TEXT,
+            missing_fields TEXT,
+            captured_at TEXT DEFAULT (datetime('now', 'localtime')),
+            FOREIGN KEY (link_id) REFERENCES links(id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -80,6 +94,7 @@ def get_all_links() -> list:
 def delete_link(link_id: int):
     """删除链接及其所有快照"""
     conn = get_conn()
+    conn.execute("DELETE FROM scrape_logs WHERE link_id = ?", (link_id,))
     conn.execute("DELETE FROM snapshots WHERE link_id = ?", (link_id,))
     conn.execute("DELETE FROM links WHERE id = ?", (link_id,))
     conn.commit()
@@ -111,6 +126,50 @@ def save_snapshot(link_id: int, data: dict):
     ))
     conn.commit()
     conn.close()
+
+
+def save_scrape_log(link_id: int, platform: str, result: dict):
+    """保存单次采集结果，失败也记录，便于前端解释可靠性。"""
+    conn = get_conn()
+    missing_fields = result.get("missing_fields") or []
+    conn.execute("""
+        INSERT INTO scrape_logs
+        (link_id, platform, status, source, error, missing_fields)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        link_id,
+        platform,
+        result.get("status", "error"),
+        result.get("source"),
+        result.get("error"),
+        json.dumps(missing_fields, ensure_ascii=False),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_latest_scrape_logs() -> dict:
+    """按 link_id 获取最近一次采集日志。"""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT sl.*
+        FROM scrape_logs sl
+        JOIN (
+            SELECT link_id, MAX(id) AS max_id
+            FROM scrape_logs
+            GROUP BY link_id
+        ) latest ON latest.max_id = sl.id
+    """).fetchall()
+    conn.close()
+    result = {}
+    for row in rows:
+        item = dict(row)
+        try:
+            item["missing_fields"] = json.loads(item.get("missing_fields") or "[]")
+        except json.JSONDecodeError:
+            item["missing_fields"] = []
+        result[item["link_id"]] = item
+    return result
 
 
 def get_latest_snapshots(platform: str = None) -> list:
@@ -174,7 +233,13 @@ def get_stats() -> dict:
             COUNT(*) as cnt
         FROM (
             SELECT 
-                CAST((julianday(?) - julianday(s.publish_time, 'unixepoch')) AS INTEGER) as days
+                CAST((
+                    julianday(?) -
+                    CASE
+                        WHEN s.publish_time NOT GLOB '*[^0-9]*' THEN julianday(s.publish_time, 'unixepoch')
+                        ELSE julianday(s.publish_time)
+                    END
+                ) AS INTEGER) as days
             FROM snapshots s
             JOIN links l ON s.link_id = l.id
             WHERE s.id IN (SELECT MAX(id) FROM snapshots GROUP BY link_id)
@@ -192,13 +257,24 @@ def get_stats() -> dict:
     # 今日待采集数（简化：所有链接都需要采集）
     pending = total
 
-    # 异常数（最近一次抓取失败或有 error 字段的）
+    # 异常数（最近一次采集失败或最新快照缺少标题）
     anomalies = conn.execute("""
-        SELECT COUNT(DISTINCT s.link_id)
-        FROM snapshots s
-        JOIN links l ON s.link_id = l.id
-        WHERE s.id IN (SELECT MAX(id) FROM snapshots GROUP BY link_id)
-        AND (s.title IS NULL OR s.title = '')
+        SELECT COUNT(*)
+        FROM links l
+        LEFT JOIN (
+            SELECT sl.*
+            FROM scrape_logs sl
+            JOIN (
+                SELECT link_id, MAX(id) AS max_id
+                FROM scrape_logs
+                GROUP BY link_id
+            ) latest ON latest.max_id = sl.id
+        ) last_log ON last_log.link_id = l.id
+        LEFT JOIN (
+            SELECT * FROM snapshots WHERE id IN (SELECT MAX(id) FROM snapshots GROUP BY link_id)
+        ) s ON s.link_id = l.id
+        WHERE last_log.status = 'error'
+           OR (s.id IS NOT NULL AND (s.title IS NULL OR s.title = ''))
     """).fetchone()[0]
 
     # 快照覆盖率
@@ -230,15 +306,33 @@ def get_content_list(platform: str = None, search: str = None) -> list:
             s.title, s.author, s.play_count, s.like_count,
             s.comment_count, s.favorite_count, s.share_count,
             s.follower_count, s.publish_time, s.captured_at,
+            sl.status as scrape_status, sl.source as scrape_source,
+            sl.error as scrape_error, sl.missing_fields,
+            sl.captured_at as last_scraped_at,
             CASE 
                 WHEN s.publish_time IS NOT NULL AND s.publish_time != ''
-                THEN CAST((julianday(?) - julianday(s.publish_time, 'unixepoch')) AS INTEGER)
+                THEN CAST((
+                    julianday(?) -
+                    CASE
+                        WHEN s.publish_time NOT GLOB '*[^0-9]*' THEN julianday(s.publish_time, 'unixepoch')
+                        ELSE julianday(s.publish_time)
+                    END
+                ) AS INTEGER)
                 ELSE NULL
             END as days_since_publish
         FROM links l
         LEFT JOIN (
             SELECT * FROM snapshots WHERE id IN (SELECT MAX(id) FROM snapshots GROUP BY link_id)
         ) s ON l.id = s.link_id
+        LEFT JOIN (
+            SELECT sl.*
+            FROM scrape_logs sl
+            JOIN (
+                SELECT link_id, MAX(id) AS max_id
+                FROM scrape_logs
+                GROUP BY link_id
+            ) latest ON latest.max_id = sl.id
+        ) sl ON l.id = sl.link_id
         WHERE 1=1
     """
     params = [now]
@@ -255,7 +349,15 @@ def get_content_list(platform: str = None, search: str = None) -> list:
 
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["missing_fields"] = json.loads(item.get("missing_fields") or "[]")
+        except json.JSONDecodeError:
+            item["missing_fields"] = []
+        items.append(item)
+    return items
 
 
 def get_content_detail(link_id: int) -> dict:
@@ -270,14 +372,38 @@ def get_content_detail(link_id: int) -> dict:
         return None
 
     # 最新快照
-    latest = conn.execute(
-        "SELECT *, CAST((julianday(?) - julianday(publish_time, 'unixepoch')) AS INTEGER) as days_since_publish FROM snapshots WHERE link_id = ? ORDER BY captured_at DESC LIMIT 1",
-        (now, link_id)
-    ).fetchone()
+    latest = conn.execute("""
+        SELECT *,
+            CASE
+                WHEN publish_time IS NOT NULL AND publish_time != ''
+                THEN CAST((
+                    julianday(?) -
+                    CASE
+                        WHEN publish_time NOT GLOB '*[^0-9]*' THEN julianday(publish_time, 'unixepoch')
+                        ELSE julianday(publish_time)
+                    END
+                ) AS INTEGER)
+                ELSE NULL
+            END as days_since_publish
+        FROM snapshots
+        WHERE link_id = ?
+        ORDER BY captured_at DESC
+        LIMIT 1
+    """, (now, link_id)).fetchone()
 
     # 历史快照（带 T 节点标签）
     history = conn.execute(
         """SELECT * FROM snapshots WHERE link_id = ? ORDER BY captured_at ASC""",
+        (link_id,)
+    ).fetchall()
+
+    # 最近采集日志和历史日志
+    latest_log = conn.execute(
+        "SELECT * FROM scrape_logs WHERE link_id = ? ORDER BY captured_at DESC LIMIT 1",
+        (link_id,)
+    ).fetchone()
+    scrape_logs = conn.execute(
+        "SELECT * FROM scrape_logs WHERE link_id = ? ORDER BY captured_at DESC LIMIT 20",
         (link_id,)
     ).fetchall()
 
@@ -290,8 +416,14 @@ def get_content_detail(link_id: int) -> dict:
         if captured and publish_time:
             try:
                 days = conn.execute(
-                    "SELECT CAST((julianday(?) - julianday(?, 'unixepoch')) AS INTEGER)",
-                    (captured, publish_time)
+                    """SELECT CAST((
+                        julianday(?) -
+                        CASE
+                            WHEN ? NOT GLOB '*[^0-9]*' THEN julianday(?, 'unixepoch')
+                            ELSE julianday(?)
+                        END
+                    ) AS INTEGER)""",
+                    (captured, publish_time, publish_time, publish_time)
                 ).fetchone()[0]
                 if days is not None:
                     hd["days_since_publish"] = days
@@ -313,6 +445,33 @@ def get_content_detail(link_id: int) -> dict:
         result.update(dict(latest))
     
     result["history"] = history_with_t
+    result["snapshot_count"] = len(history_with_t)
+
+    if latest_log:
+        log = dict(latest_log)
+        try:
+            log["missing_fields"] = json.loads(log.get("missing_fields") or "[]")
+        except json.JSONDecodeError:
+            log["missing_fields"] = []
+        result["latest_scrape"] = log
+        result["scrape_status"] = log.get("status")
+        result["scrape_source"] = log.get("source")
+        result["scrape_error"] = log.get("error")
+        result["missing_fields"] = log.get("missing_fields", [])
+        result["last_scraped_at"] = log.get("captured_at")
+    else:
+        result["latest_scrape"] = None
+        result["missing_fields"] = []
+
+    parsed_logs = []
+    for row in scrape_logs:
+        log = dict(row)
+        try:
+            log["missing_fields"] = json.loads(log.get("missing_fields") or "[]")
+        except json.JSONDecodeError:
+            log["missing_fields"] = []
+        parsed_logs.append(log)
+    result["scrape_logs"] = parsed_logs
 
     # 计算当前T节点标签
     days = result.get("days_since_publish")

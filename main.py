@@ -4,11 +4,13 @@
 """
 import os
 import sys
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import db
 from scrapers import detect_platform, get_platform_module, extract_link_info
+from scrapers import result as scrape_result
 
 app = FastAPI(title="多平台数据抓取工具", version="1.0")
 
@@ -28,14 +30,18 @@ def do_scrape(link_id: int, url: str, platform: str):
     """执行单条链接的抓取"""
     module = get_platform_module(platform)
     if not module:
-        return {"error": f"不支持的平台: {platform}"}
+        result = scrape_result.error(f"不支持的平台: {platform}")
+        db.save_scrape_log(link_id, platform, result)
+        return result
 
-    data = module.fetch(url)
-    if data and "error" not in data:
-        db.save_snapshot(link_id, data)
-        return {"status": "ok", "data": data}
-    else:
-        return {"status": "error", "error": data.get("error", "抓取失败") if data else "无数据返回"}
+    raw = module.fetch(url)
+    result = scrape_result.normalize(raw, "api" if platform == "bilibili" else "browser_dom")
+    db.save_scrape_log(link_id, platform, result)
+
+    if result["status"] in ("ok", "partial") and result.get("data"):
+        db.save_snapshot(link_id, result["data"])
+
+    return result
 
 
 @app.post("/api/links")
@@ -88,16 +94,33 @@ def api_history(link_id: int, limit: int = 30):
 @app.post("/api/scrape-all")
 def api_scrape_all():
     """手动触发所有链接的抓取"""
+    started = time.time()
     links = db.get_all_links()
     results = []
+    counts = {"ok": 0, "partial": 0, "error": 0}
     for link in links:
         res = do_scrape(link["id"], link["url"], link["platform"])
+        status = res.get("status", "error")
+        counts[status] = counts.get(status, 0) + 1
         results.append({
+            "link_id": link["id"],
             "url": link["url"],
             "platform": link["platform"],
+            "status": status,
+            "title": (res.get("data") or {}).get("title"),
+            "source": res.get("source"),
+            "error": res.get("error"),
+            "missing_fields": res.get("missing_fields", []),
             "result": res,
         })
-    return {"total": len(links), "results": results}
+    return {
+        "total": len(links),
+        "ok": counts.get("ok", 0),
+        "partial": counts.get("partial", 0),
+        "error": counts.get("error", 0),
+        "duration_sec": round(time.time() - started, 1),
+        "results": results,
+    }
 
 
 @app.get("/api/stats")

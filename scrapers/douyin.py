@@ -16,6 +16,14 @@ import random
 from urllib.parse import unquote
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from scrapers import result as scrape_result
+
+PROFILE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "browser_profiles", "douyin")
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def parse_url(url: str) -> tuple[str, str] | None:
@@ -92,6 +100,83 @@ def _extract_render_data(html: str) -> dict | None:
         return find_video(app)
     except Exception:
         return None
+
+
+def _walk(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _walk(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk(item)
+
+
+def _parse_count(value) -> int:
+    text = str(value or "").strip().replace(",", "")
+    if not text:
+        return 0
+    try:
+        if "万" in text:
+            return int(float(text.replace("万", "")) * 10000)
+        return int(float(text))
+    except ValueError:
+        return 0
+
+
+def _fallback_from_share_text(raw_url: str, target_id: str) -> dict:
+    """抖音抓不到页面时，至少从用户粘贴的分享文案保留标题。"""
+    text = re.sub(r'https?://\S+', '', raw_url).strip()
+    text = re.sub(r'复制此链接.*$', '', text).strip()
+    text = re.sub(r'^[\d.:\sA-Za-z@/\-]+', '', text).strip()
+    title = text or f"抖音内容 {target_id}"
+    return {
+        "title": title[:120],
+        "author": "",
+        "author_id": "",
+        "play_count": 0,
+        "like_count": 0,
+        "comment_count": 0,
+        "favorite_count": 0,
+        "share_count": 0,
+        "publish_time": "",
+        "raw_data": json.dumps(
+            {"platform": "douyin", "source": "share_text", "note": "平台页面采集失败，使用分享文案兜底"},
+            ensure_ascii=False,
+        ),
+    }
+
+
+def _extract_network_data(payloads: list[dict]) -> dict | None:
+    """从抖音 JSON 响应中尽力提取视频核心字段。"""
+    for payload in payloads:
+        for item in _walk(payload):
+            title = item.get("desc") or item.get("title")
+            author_info = item.get("author") or item.get("author_info") or item.get("authorInfo")
+            stats = item.get("statistics") or item.get("stats") or item.get("stat") or {}
+            if not title and not stats:
+                continue
+
+            author = ""
+            if isinstance(author_info, dict):
+                author = author_info.get("nickname") or author_info.get("name") or ""
+            elif author_info:
+                author = str(author_info)
+
+            publish_time = item.get("create_time") or item.get("createTime") or item.get("publish_time") or ""
+            return {
+                "title": title or "抖音视频",
+                "author": author,
+                "author_id": author,
+                "play_count": _parse_count(stats.get("play_count") or stats.get("playCount") or 0),
+                "like_count": _parse_count(stats.get("digg_count") or stats.get("like_count") or 0),
+                "comment_count": _parse_count(stats.get("comment_count") or 0),
+                "favorite_count": _parse_count(stats.get("collect_count") or stats.get("favorite_count") or 0),
+                "share_count": _parse_count(stats.get("share_count") or 0),
+                "publish_time": publish_time,
+                "raw_data": json.dumps({"platform": "douyin", "source": "browser_network"}, ensure_ascii=False),
+            }
+    return None
 
 
 def _extract_page_data(page) -> dict:
@@ -184,19 +269,23 @@ def _extract_page_data(page) -> dict:
             "play_count": 0,
             "like_count": like_count,
             "comment_count": 0,
+            "favorite_count": 0,
             "share_count": 0,
             "publish_time": publish_time,
-            "raw_data": json.dumps({"platform": "douyin", "note": "仅标题/作者/点赞，播放量等需第三方API"}, ensure_ascii=False),
+            "raw_data": json.dumps({"platform": "douyin", "source": "browser_dom", "note": "抖音字段会按页面可见性降级"}, ensure_ascii=False),
         }
 
-    return {"error": "未能提取到任何数据。抖音服务端识别到自动化请求（isSpider），仅返回了空壳页面。"}
+    return scrape_result.error(
+        "未能提取到任何数据。抖音可能识别到自动化请求或返回空壳页面。",
+        "browser_dom",
+    )
 
 
 def fetch(url: str) -> dict:
     """抓取抖音视频数据"""
     parsed = parse_url(url)
     if not parsed:
-        return {"error": "无法解析该链接"}
+        return scrape_result.error("无法解析该链接", "browser_dom")
 
     link_type, target_id = parsed
 
@@ -211,25 +300,36 @@ def fetch(url: str) -> dict:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
+            os.makedirs(PROFILE_DIR, exist_ok=True)
+            context = p.chromium.launch_persistent_context(
+                PROFILE_DIR,
                 headless=True,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-gpu",
                     "--disable-dev-shm-usage",
-                ]
-            )
-
-            context = browser.new_context(
+                ],
                 viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/120.0.0.0 Safari/537.36",
+                user_agent=USER_AGENT,
                 locale="zh-CN",
             )
 
             page = context.new_page()
+            network_payloads = []
+
+            def capture_response(response):
+                if "douyin.com" not in response.url:
+                    return
+                ctype = response.headers.get("content-type", "")
+                if "json" not in ctype:
+                    return
+                try:
+                    network_payloads.append(response.json())
+                except Exception:
+                    pass
+
+            page.on("response", capture_response)
             page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
                 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -245,26 +345,46 @@ def fetch(url: str) -> dict:
 
             current_page_url = page.url
             if "verify" in current_page_url.lower() or "captcha" in current_page_url.lower():
-                browser.close()
-                return {"error": "抖音触发了验证码，抓取被拦截。"}
+                context.close()
+                return scrape_result.error("抖音触发了验证码，需要人工检查后重试。", "manual_unavailable")
 
             if "404" in page.title().lower() or "不存在" in page.title():
-                browser.close()
-                return {"error": "页面不存在或已被删除"}
+                context.close()
+                return scrape_result.error("页面不存在或已被删除", "browser_dom")
 
-            data = _extract_page_data(page)
-            browser.close()
+            data = _extract_network_data(network_payloads)
+            source = "browser_network" if data else "browser_dom"
+            if not data:
+                data = _extract_page_data(page)
+            context.close()
+
+            if data and data.get("status") == "error":
+                fallback = _fallback_from_share_text(url, target_id)
+                missing = ["author", "publish_time", "play_count", "like_count", "comment_count", "favorite_count", "share_count"]
+                return scrape_result.ok(fallback, "manual_unavailable", missing)
 
             if data and "error" not in data:
-                return data
+                fallback = _fallback_from_share_text(url, target_id)
+                if fallback.get("title") and len(fallback["title"]) > len(data.get("title") or ""):
+                    data["title"] = fallback["title"]
+                missing = []
+                for field in ["play_count", "comment_count", "favorite_count", "share_count"]:
+                    if not data.get(field):
+                        missing.append(field)
+                return scrape_result.ok(data, source, missing)
 
-            if data and "error" in data:
-                return data
-
-            return {"error": "未能提取到抖音数据。抖音反爬非常严格，建议使用第三方数据 API。"}
+            fallback = _fallback_from_share_text(url, target_id)
+            missing = ["author", "publish_time", "play_count", "like_count", "comment_count", "favorite_count", "share_count"]
+            return scrape_result.ok(fallback, "manual_unavailable", missing)
 
     except Exception as e:
-        return {"error": f"抖音抓取出错: {str(e)}"}
+        fallback = _fallback_from_share_text(url, parsed[1] if parsed else url)
+        missing = ["author", "publish_time", "play_count", "like_count", "comment_count", "favorite_count", "share_count"]
+        fallback["raw_data"] = json.dumps(
+            {"platform": "douyin", "source": "share_text", "error": str(e)},
+            ensure_ascii=False,
+        )
+        return scrape_result.ok(fallback, "manual_unavailable", missing)
 
 
 def extract_platform_info(url: str) -> tuple[str, str] | None:

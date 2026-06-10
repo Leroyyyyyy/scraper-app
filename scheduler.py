@@ -6,7 +6,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 import db
 from datetime import datetime
-from scrapers import get_platform_module
+from main import do_scrape
 
 
 def run():
@@ -15,18 +15,14 @@ def run():
     links = db.get_all_links()
     
     for link in links:
-        module = get_platform_module(link["platform"])
-        if not module:
-            print(f"  [SKIP] {link['url']} — 不支持的平台")
-            continue
-
-        data = module.fetch(link["url"])
-        if data and "error" not in data:
-            db.save_snapshot(link["id"], data)
-            print(f"  [OK] {link['url']} — {data.get('title', '')[:30]}")
+        result = do_scrape(link["id"], link["url"], link["platform"])
+        status = result.get("status", "error").upper()
+        data = result.get("data") or {}
+        if result.get("status") in ("ok", "partial"):
+            suffix = f" — 缺失字段: {', '.join(result.get('missing_fields', []))}" if result.get("missing_fields") else ""
+            print(f"  [{status}] {link['url']} — {data.get('title', '')[:30]}{suffix}")
         else:
-            error = data.get("error", "未知错误") if data else "无数据"
-            print(f"  [FAIL] {link['url']} — {error}")
+            print(f"  [FAIL] {link['url']} — {result.get('error', '未知错误')}")
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 抓取完成")
 

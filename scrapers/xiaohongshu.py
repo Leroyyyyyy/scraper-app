@@ -1,22 +1,21 @@
 """
-小红书抓取模块 — Phase 2
-使用 Playwright 模拟浏览器，Cookie 持久化
-
-首次使用流程：
-1. 运行时会打开一个可见浏览器窗口
-2. 手动扫码登录小红书
-3. Cookie 自动保存到 data/xiaohongshu_cookies.json
-4. 之后自动使用已保存的 Cookie 抓取
+小红书抓取模块
+使用 Playwright 持久化浏览器上下文，默认匿名采集；登录一次后复用本机登录态。
 """
 import os
 import re
 import json
 import time
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from scrapers import result as scrape_result
 
-COOKIE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "xiaohongshu_cookies.json")
+PROFILE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "browser_profiles", "xiaohongshu")
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 def parse_url(url: str) -> tuple[str, str] | None:
@@ -40,24 +39,45 @@ def parse_url(url: str) -> tuple[str, str] | None:
     return None
 
 
-def _load_cookies() -> list | None:
-    """加载已保存的 Cookie"""
-    if os.path.exists(COOKIE_FILE):
-        try:
-            with open(COOKIE_FILE, "r") as f:
-                cookies = json.load(f)
-                if cookies:
-                    return cookies
-        except (json.JSONDecodeError, IOError):
-            pass
+def _walk(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _walk(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk(item)
+
+
+def _extract_network_data(payloads: list[dict]) -> dict | None:
+    """从页面 JSON 响应中尽力提取笔记核心字段。"""
+    for payload in payloads:
+        for item in _walk(payload):
+            title = item.get("title") or item.get("display_title") or item.get("desc")
+            author_info = item.get("user") or item.get("user_info") or item.get("author")
+            interact = item.get("interact_info") or item.get("interactInfo") or item.get("stat") or {}
+            if not title and not interact:
+                continue
+
+            author = ""
+            if isinstance(author_info, dict):
+                author = author_info.get("nickname") or author_info.get("name") or ""
+            elif author_info:
+                author = str(author_info)
+
+            return {
+                "title": title or "小红书笔记",
+                "author": author,
+                "author_id": author,
+                "play_count": 0,
+                "like_count": _parse_count(str(interact.get("liked_count") or interact.get("like_count") or 0)),
+                "favorite_count": _parse_count(str(interact.get("collected_count") or interact.get("collect_count") or 0)),
+                "comment_count": _parse_count(str(interact.get("comment_count") or 0)),
+                "share_count": _parse_count(str(interact.get("share_count") or 0)),
+                "publish_time": item.get("time") or item.get("publish_time") or "",
+                "raw_data": json.dumps({"platform": "xiaohongshu", "source": "browser_network"}, ensure_ascii=False),
+            }
     return None
-
-
-def _save_cookies(cookies: list):
-    """保存 Cookie 到文件"""
-    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-    with open(COOKIE_FILE, "w") as f:
-        json.dump(cookies, f)
 
 
 def _extract_page_data(page) -> dict | None:
@@ -116,16 +136,21 @@ def _extract_page_data(page) -> dict | None:
     if not title:
         title = page.title().replace(" - 小红书", "").strip()
 
+    if title in ("手机号登录", "登录", "小红书登录") or "登录" in title:
+        return None
+
     if title or author:
         return {
             "title": title or "小红书笔记",
             "author": author,
             "author_id": author,
+            "play_count": 0,
             "like_count": like_count,
             "favorite_count": collect_count,
             "comment_count": comment_count,
+            "share_count": 0,
             "publish_time": "",
-            "raw_data": json.dumps({"platform": "xiaohongshu"}, ensure_ascii=False),
+            "raw_data": json.dumps({"platform": "xiaohongshu", "source": "browser_dom"}, ensure_ascii=False),
         }
 
     return None
@@ -144,95 +169,128 @@ def _parse_count(text: str) -> int:
         return 0
 
 
-def _login_and_save_cookies() -> list:
-    """打开浏览器让用户手动扫码登录，保存并返回 Cookie"""
-    print("\n" + "=" * 50)
-    print("  小红书登录 — 请在打开的浏览器中扫码登录")
-    print("=" * 50 + "\n")
+def _fallback_from_url(url: str) -> dict:
+    parsed = parse_url(url)
+    note_id = parsed[1] if parsed else url.strip().split("?")[0]
+    return {
+        "title": f"小红书笔记 {note_id}",
+        "author": "",
+        "author_id": "",
+        "play_count": 0,
+        "like_count": 0,
+        "favorite_count": 0,
+        "comment_count": 0,
+        "share_count": 0,
+        "publish_time": "",
+        "raw_data": json.dumps(
+            {"platform": "xiaohongshu", "source": "url_fallback", "note": "匿名采集受限，使用链接兜底"},
+            ensure_ascii=False,
+        ),
+    }
 
+
+def login_profile():
+    """打开可见浏览器登录小红书，登录态保存在持久化 profile 中。"""
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        context = p.chromium.launch_persistent_context(
+            PROFILE_DIR,
             headless=False,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
-            ]
-        )
-        context = browser.new_context(
+            ],
             viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/120.0.0.0 Safari/537.36",
+            user_agent=USER_AGENT,
+            locale="zh-CN",
         )
         page = context.new_page()
         page.goto("https://www.xiaohongshu.com/explore", timeout=30000)
 
-        print("请在浏览器中扫码登录小红书...")
-        print("登录成功后，回到这里按 Enter 继续...\n")
+        print("\n请在打开的浏览器里完成小红书登录。")
+        print("登录成功后，回到这个窗口按 Enter 保存登录态。\n")
         input(">>> 按 Enter 继续 ")
 
-        cookies = context.cookies()
-        _save_cookies(cookies)
-        browser.close()
-
-    print("Cookie 已保存!\n")
-    return cookies
+        context.storage_state(path=os.path.join(PROFILE_DIR, "storage_state.json"))
+        context.close()
+        print("\n小红书登录态已保存，之后刷新会自动复用。\n")
 
 
 def fetch(url: str) -> dict:
     """抓取小红书笔记数据"""
-    cookies = _load_cookies()
-    need_login = not cookies
-
-    close_on_done = False
-    if need_login:
-        print("[小红书] 需要登录...")
-        return {
-            "error": "小红书需要首次登录。请在终端运行: python3 scrapers/xiaohongshu_login.py"
-        }
-        # 后台模式下不能交互，所以提示用户手动运行登录脚本
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        context = p.chromium.launch_persistent_context(
+            PROFILE_DIR,
             headless=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-gpu",
-            ]
-        )
-        context = browser.new_context(
+            ],
             viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/120.0.0.0 Safari/537.36",
+            user_agent=USER_AGENT,
+            locale="zh-CN",
         )
 
-        context.add_cookies(cookies)
         page = context.new_page()
+        network_payloads = []
+
+        def capture_response(response):
+            if "xiaohongshu.com" not in response.url:
+                return
+            ctype = response.headers.get("content-type", "")
+            if "json" not in ctype:
+                return
+            try:
+                network_payloads.append(response.json())
+            except Exception:
+                pass
+
+        page.on("response", capture_response)
 
         try:
             page.goto(url, timeout=20000, wait_until="domcontentloaded")
         except PlaywrightTimeout:
             pass
 
-        # 检查是否需要重新登录
-        if "login" in page.url.lower() or "passport" in page.url.lower():
-            browser.close()
-            # Cookie 过期，删除旧文件
-            if os.path.exists(COOKIE_FILE):
-                os.remove(COOKIE_FILE)
-            return {
-                "error": "小红书 Cookie 已过期，请在终端运行: python3 scrapers/xiaohongshu_login.py"
-            }
+        page_title = ""
+        try:
+            page_title = page.title()
+        except Exception:
+            pass
 
-        data = _extract_page_data(page)
-        browser.close()
+        # 匿名采集遇到登录墙时直接降级，不保存“手机号登录”这类假标题。
+        if (
+            "login" in page.url.lower()
+            or "passport" in page.url.lower()
+            or page_title in ("手机号登录", "登录", "小红书登录")
+            or "登录" in page_title
+        ):
+            context.close()
+            fallback = _fallback_from_url(url)
+            return scrape_result.partial(
+                fallback,
+                "manual_unavailable",
+                ["author", "publish_time", "play_count", "like_count", "comment_count", "favorite_count", "share_count"],
+                "小红书需要登录后才能查看该笔记，请运行 小红书登录.command 后重试",
+            )
+
+        data = _extract_network_data(network_payloads)
+        source = "browser_network" if data else "browser_dom"
+        if not data:
+            data = _extract_page_data(page)
+        context.close()
 
         if data:
-            return data
-        else:
-            return {"error": "未能提取到数据，小红书页面结构可能已变更"}
+            return scrape_result.ok(data, source)
+        fallback = _fallback_from_url(url)
+        return scrape_result.partial(
+            fallback,
+            "manual_unavailable",
+            ["author", "publish_time", "play_count", "like_count", "comment_count", "favorite_count", "share_count"],
+            "小红书匿名采集受限，建议运行 小红书登录.command 后重试",
+        )
 
 
 def extract_platform_info(url: str) -> tuple[str, str] | None:
